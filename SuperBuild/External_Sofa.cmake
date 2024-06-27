@@ -46,8 +46,9 @@ if(NOT DEFINED ${proj}_DIR AND NOT ${SUPERBUILD_TOPLEVEL_PROJECT}_USE_SYSTEM_${p
   set(${plugin_name}_SOURCE_DIR "${CMAKE_BINARY_DIR}/${plugin_name}")
   FetchContent_Populate(${plugin_name}
     SOURCE_DIR     ${${plugin_name}_SOURCE_DIR}
-    GIT_REPOSITORY "https://github.com/sofa-framework/SofaPython3.git"
-    GIT_TAG        "1972c51819b6eb5ac1bbc479ff4e29f6f55f36f4" # v23.12-20240313
+    # TODO Restore to original sofa plugin when https://github.com/RafaelPalomar/SofaPython3/tree/comp/fix_gcc7_compatibility is resolved
+    GIT_REPOSITORY "https://github.com/RafaelPalomar/SofaPython3.git"
+    GIT_TAG        "8c6fffa7a7013976863ddbbc282682573f375300" # v23.12-20240313 + fix gcc7
     GIT_PROGRESS   1
     QUIET
     )
