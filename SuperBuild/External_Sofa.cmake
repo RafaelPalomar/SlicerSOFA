@@ -67,6 +67,19 @@ if(NOT DEFINED ${proj}_DIR AND NOT ${SUPERBUILD_TOPLEVEL_PROJECT}_USE_SYSTEM_${p
   list(APPEND SOFA_EXTERNAL_DIRECTORIES ${${plugin_name}_SOURCE_DIR})
   ExternalProject_Message(${proj} "${plugin_name} sources [OK]")
 
+  # SofaSoftRobots
+  set(plugin_name "SofaSoftRobots")
+  set(${plugin_name}_SOURCE_DIR "${CMAKE_BINARY_DIR}/${plugin_name}")
+  FetchContent_Populate(${plugin_name}
+    SOURCE_DIR     ${${plugin_name}_SOURCE_DIR}
+    GIT_REPOSITORY "https://github.com/SofaDefrost/SoftRobots.git"
+    GIT_TAG        "9f18097c5d3da30a8e64f5db6ae1eeaa251cf7eb" # v24.06
+    GIT_PROGRESS   1
+    QUIET
+    )
+  list(APPEND SOFA_EXTERNAL_DIRECTORIES ${${plugin_name}_SOURCE_DIR})
+  ExternalProject_Message(${proj} "${plugin_name} sources [OK]")
+
   set(EP_SOURCE_DIR ${CMAKE_BINARY_DIR}/${proj})
   set(EP_BINARY_DIR ${CMAKE_BINARY_DIR}/${proj}-build)
 
