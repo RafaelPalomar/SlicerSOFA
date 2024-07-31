@@ -46,8 +46,8 @@ if(NOT DEFINED ${proj}_DIR AND NOT ${SUPERBUILD_TOPLEVEL_PROJECT}_USE_SYSTEM_${p
   set(${plugin_name}_SOURCE_DIR "${CMAKE_BINARY_DIR}/${plugin_name}")
   FetchContent_Populate(${plugin_name}
     SOURCE_DIR     ${${plugin_name}_SOURCE_DIR}
-    GIT_REPOSITORY "https://github.com/Slicer/SofaPython3.git"
-    GIT_TAG        "baaf3fc6f3f2665aacb4178a69eb27003936fda8" # slicer-20.12.00-2024-03-13-1972c5181
+    GIT_REPOSITORY "https://github.com/Sofa-Framework/SofaPython3.git"
+    GIT_TAG        "c145b7a2d3f553a2f3d050fae658646decd3a729" # master-20240731
     GIT_PROGRESS   1
     QUIET
     )
@@ -60,7 +60,7 @@ if(NOT DEFINED ${proj}_DIR AND NOT ${SUPERBUILD_TOPLEVEL_PROJECT}_USE_SYSTEM_${p
   FetchContent_Populate(${plugin_name}
     SOURCE_DIR     ${${plugin_name}_SOURCE_DIR}
     GIT_REPOSITORY "https://github.com/SofaDefrost/STLIB.git"
-    GIT_TAG        "41de3a79e9bb887db3e163eebb7ad3d40f3d31e8" # v23.12-20240313
+    GIT_TAG        "2775941e455067d537c6774345ad25b823dd82e1" # master-20240731
     GIT_PROGRESS   1
     QUIET
     )
@@ -73,7 +73,7 @@ if(NOT DEFINED ${proj}_DIR AND NOT ${SUPERBUILD_TOPLEVEL_PROJECT}_USE_SYSTEM_${p
   FetchContent_Populate(${plugin_name}
     SOURCE_DIR     ${${plugin_name}_SOURCE_DIR}
     GIT_REPOSITORY "https://github.com/SofaDefrost/SoftRobots.git"
-    GIT_TAG        "9f18097c5d3da30a8e64f5db6ae1eeaa251cf7eb" # v24.06
+    GIT_TAG        "7a71a5b052ef95b2711384750f13e10632d5a6fa" # master-20240731
     GIT_PROGRESS   1
     QUIET
     )
@@ -86,8 +86,8 @@ if(NOT DEFINED ${proj}_DIR AND NOT ${SUPERBUILD_TOPLEVEL_PROJECT}_USE_SYSTEM_${p
   ExternalProject_Add(${proj}
     ${${proj}_EP_ARGS}
     # Note: Update the repository URL and tag to match the correct SOFA version
-    GIT_REPOSITORY "https://github.com/Slicer/sofa.git"
-    GIT_TAG "4183113b4baaa433606aa2dc7dded8db33578bb6" # slicer-v24.06.00-2024-06-07-2628b9f29
+    GIT_REPOSITORY "https://github.com/sofa-framework/sofa.git"
+    GIT_TAG "4253d031a3cff5965bada402338ccb2d7c27ba8e" # master-20240731
     URL ${SOFA_URL}
     URL_HASH ${SOFA_URL_HASH}
     DOWNLOAD_DIR ${CMAKE_BINARY_DIR}/download
