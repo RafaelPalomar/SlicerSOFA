@@ -59,7 +59,7 @@ if(NOT DEFINED ${proj}_DIR AND NOT ${SUPERBUILD_TOPLEVEL_PROJECT}_USE_SYSTEM_${p
   FetchContent_Populate(${plugin_name}
     SOURCE_DIR     ${${plugin_name}_SOURCE_DIR}
     GIT_REPOSITORY "https://github.com/Slicer/SofaPython3.git"
-    GIT_TAG        "baaf3fc6f3f2665aacb4178a69eb27003936fda8" # slicer-20.12.00-2024-03-13-1972c5181
+    GIT_TAG        "0399c432c2c47a8235fe4f551c6d69ef84519772" # slicer-24.12.00-2025-29-01-0399c432c
     GIT_PROGRESS   1
     QUIET
     )
@@ -86,7 +86,7 @@ if(NOT DEFINED ${proj}_DIR AND NOT ${SUPERBUILD_TOPLEVEL_PROJECT}_USE_SYSTEM_${p
     ${${proj}_EP_ARGS}
     # Note: Update the repository URL and tag to match the correct SOFA version
     GIT_REPOSITORY "https://github.com/Slicer/sofa.git"
-    GIT_TAG "8778c194336efb7551c620b047f0e7ea24b93fd7" # slicer-v24.06.00-2024-06-07-2628b9f29
+    GIT_TAG "23efcef14ddcd53278cade3e69d984cc6929939d" # slicer-v24.12.00-2025-29-01-23efcef14
     URL ${SOFA_URL}
     URL_HASH ${SOFA_URL_HASH}
     DOWNLOAD_DIR ${CMAKE_BINARY_DIR}/download
