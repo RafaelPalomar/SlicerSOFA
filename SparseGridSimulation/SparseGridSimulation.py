@@ -544,8 +544,13 @@ class SparseGridSimulationLogic(SlicerSofaLogic):
         self.probeGrid.SetSpacing(1, 1, 1)
         self.probeFilter = vtk.vtkProbeFilter()
         self.probeFilter.SetInputData(self.probeGrid)
-        self.probeFilter.SetSourceData(self._parameterNode.sparseGridModelNode.GetUnstructuredGrid())
         self.probeFilter.SetPassPointArrays(True)
+
+        # The probe source is the sparse grid moved back to its rest positions,
+        # rebuilt lazily on the first update; see _updateProbingImage.  Cleared
+        # here because startSimulation creates a new SOFA scene, and with it a
+        # sparse grid of possibly different size.
+        self.restGrid = None
 
         # Provide TransformToParent directly instead of letting the rendering
         # pipeline invert TransformFromParent.  Inverting near steep
@@ -573,17 +578,57 @@ class SparseGridSimulationLogic(SlicerSofaLogic):
         self.displacementGrid.Modified()
 
     def _updateProbingImage(self) -> None:
-        # Update the geometry of the probing image, which need to match the sparse grid created by SOFA
-        femGridBounds = [0] * 6
-        self._parameterNode.modelNode.GetRASBounds(femGridBounds)
+        """Resample the SOFA displacement field onto the regular grid transform.
 
-        self.probeGrid.SetOrigin(femGridBounds[0], femGridBounds[2], femGridBounds[4])
-        probeSize = (abs(femGridBounds[1] - femGridBounds[0]),
-                     abs(femGridBounds[3] - femGridBounds[2]),
-                     abs(femGridBounds[5] - femGridBounds[4]))
-        self.probeGrid.SetSpacing(probeSize[0] / self._parameterNode.sparseGridDimensions.x,
-                                  probeSize[1] / self._parameterNode.sparseGridDimensions.y,
-                                  probeSize[2] / self._parameterNode.sparseGridDimensions.z)
+        The field is installed as TransformToParent, so it must be a function of
+        the *rest* coordinate: it answers "where did the undeformed point at x
+        move to?".  Both the probed domain and the probe source therefore have
+        to be the rest configuration.
+
+        Neither is available directly.  sofaMechanicalObjectToMRMLModelPoly
+        rewrites modelNode in place on every step, so modelNode.GetRASBounds()
+        returns the *deformed* surface; sofaMechanicalObjectToMRMLModelGrid does
+        the same to sparseGridModelNode's points.  Probing those makes the field
+        a function of the deformed coordinate, so the sampling grid tracks the
+        motion and cancels part of it, and the transform under-reports the
+        deformation by an amount that grows with the deformation itself.  At
+        small displacements the two domains nearly coincide and the error is
+        second order, which is how this survived: a liver whose FEM surface moved
+        49 mm produced a transform predicting 19 mm, correlated 0.15 with the
+        mesh it came from.
+
+        The rest positions are recoverable: the sparse grid carries both its
+        deformed points and the Displacement that produced them.
+        """
+        sparseGrid = self._parameterNode.sparseGridModelNode.GetUnstructuredGrid()
+        displacement = vtk.util.numpy_support.vtk_to_numpy(
+            sparseGrid.GetPointData().GetArray("Displacement"))
+
+        if self.restGrid is None:
+            # Rest geometry is invariant, so build it once; only the
+            # Displacement it carries changes from step to step.
+            deformedPoints = vtk.util.numpy_support.vtk_to_numpy(
+                sparseGrid.GetPoints().GetData())
+            self.restGrid = vtk.vtkUnstructuredGrid()
+            self.restGrid.DeepCopy(sparseGrid)
+            self.restGrid.GetPoints().SetData(vtk.util.numpy_support.numpy_to_vtk(
+                deformedPoints - displacement, deep=1))
+            self.probeFilter.SetSourceData(self.restGrid)
+        else:
+            vtk.util.numpy_support.vtk_to_numpy(
+                self.restGrid.GetPointData().GetArray("Displacement"))[:] = displacement
+        self.restGrid.Modified()
+
+        restBounds = self.restGrid.GetBounds()
+        dimensions = self._parameterNode.sparseGridDimensions
+        self.probeGrid.SetOrigin(restBounds[0], restBounds[2], restBounds[4])
+        # n samples span the box in n-1 intervals.  Dividing by n instead leaves
+        # the last cell of the model outside the field, where vtkGridTransform
+        # can only clamp to the edge value.
+        self.probeGrid.SetSpacing(
+            (restBounds[1] - restBounds[0]) / max(dimensions.x - 1, 1),
+            (restBounds[3] - restBounds[2]) / max(dimensions.y - 1, 1),
+            (restBounds[5] - restBounds[4]) / max(dimensions.z - 1, 1))
         self.probeGrid.AllocateScalars(vtk.VTK_DOUBLE, 1)
         self.probeGrid.Modified()
         self.probeFilter.Update()
@@ -634,6 +679,8 @@ class SparseGridSimulationTest(ScriptedLoadableModuleTest):
         self.test_displacementGridIsStoredAsTransformToParent()
         self.setUp()
         self.test_displacementGridDimensionsMatchParameters()
+        self.setUp()
+        self.test_transformReproducesTheMeshDeformation()
 
     @staticmethod
     def _createInputSurfaceModel(radius=10.0, name="Test Surface"):
@@ -722,6 +769,96 @@ class SparseGridSimulationTest(ScriptedLoadableModuleTest):
 
         logic.stopSimulation()
         self.delayDisplay("TransformToParent test passed")
+
+    def test_transformReproducesTheMeshDeformation(self):
+        """The grid transform must map each rest point to where the FEM moved it.
+
+        The other tests in this file pin structure -- which object, which slot,
+        what dimensions -- and no amount of that can tell a correct displacement
+        field from one sampled over the wrong domain.  This asserts the meaning
+        instead: evaluate TransformToParent at the undeformed surface vertices
+        and require it to reproduce the deformation the simulation actually
+        produced.  Everything downstream of this module (hardening onto a volume,
+        resampling a segmentation) rides on the transform rather than on the
+        mesh, so a transform that disagrees with its own mesh is silently wrong
+        everywhere.
+
+        Two details are load-bearing, because the defect being guarded against is
+        second order in the displacement and a test that barely moves cannot see
+        it:
+
+        - addBoundaryROI covers the whole bounding box, which fixes nearly every
+          node.  The ROI is narrowed to a basal slab so the sphere can bend.
+        - gravityMagnitude is raised well above its 1.0 default.
+
+        Regression guard for: the probe grid was positioned with
+        modelNode.GetRASBounds() and sampled sparseGridModelNode's points, both
+        of which the SOFA->MRML mappings rewrite in place to the *deformed*
+        configuration.  The sampling grid then tracked the motion and cancelled
+        part of it.  Measured on a liver before the fix: 49 mm of mean surface
+        displacement produced a transform predicting 19 mm, correlated 0.15 with
+        the mesh it was built from.
+        """
+        self.delayDisplay("Starting transform-reproduces-deformation test")
+
+        logic = self._buildLogic()
+        parameterNode = logic.getParameterNode()
+
+        bounds = [0.0] * 6
+        parameterNode.modelNode.GetPolyData().GetBounds(bounds)
+        extent = [bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4]]
+        roiNode = parameterNode.boundaryROI
+        roiNode.SetSize(2.0 * extent[0], 2.0 * extent[1], 0.4 * extent[2])
+        roiNode.SetCenter((bounds[0] + bounds[1]) / 2.0,
+                          (bounds[2] + bounds[3]) / 2.0,
+                          bounds[4] + 0.1 * extent[2])
+        parameterNode.gravityMagnitude = 500.0
+
+        restPoints = slicer.util.arrayFromModelPoints(parameterNode.modelNode).copy()
+
+        logic.startSimulation()
+        for _ in range(50):
+            logic.simulationStep()
+            slicer.app.processEvents()
+
+        deformedPoints = slicer.util.arrayFromModelPoints(parameterNode.modelNode).copy()
+        actual = deformedPoints - restPoints
+        actualMagnitude = np.linalg.norm(actual, axis=1)
+
+        self.assertGreater(
+            actualMagnitude.max(), 0.05 * max(extent),
+            "the surface barely moved, so the test cannot distinguish a correct "
+            "transform from a broken one -- raise gravityMagnitude or the step count")
+
+        toParent = parameterNode.gridTransformNode.GetTransformToParent()
+        predicted = np.array([toParent.TransformPoint(p.tolist()) for p in restPoints]) - restPoints
+        error = np.linalg.norm(predicted - actual, axis=1)
+
+        # The probe grid coincides with the FEM nodes and the surface rides the
+        # hexahedra through a BarycentricMapping, so agreement should be near
+        # exact; the tolerance only absorbs probe points outside the sparse grid.
+        self.assertLess(
+            error.mean(), 0.05 * actualMagnitude.mean(),
+            "grid transform does not reproduce the mesh deformation: "
+            "mean|error|=%.4f mm against mean displacement %.4f mm"
+            % (error.mean(), actualMagnitude.mean()))
+
+        # The field must be defined over the rest configuration it is indexed by.
+        displacementGrid = toParent.GetDisplacementGrid()
+        fieldBounds = displacementGrid.GetBounds()
+        restBounds = [restPoints[:, 0].min(), restPoints[:, 0].max(),
+                      restPoints[:, 1].min(), restPoints[:, 1].max(),
+                      restPoints[:, 2].min(), restPoints[:, 2].max()]
+        for axis in range(3):
+            self.assertLessEqual(
+                fieldBounds[2 * axis], restBounds[2 * axis] + 1e-6,
+                "displacement field starts inside the rest model on axis %d" % axis)
+            self.assertGreaterEqual(
+                fieldBounds[2 * axis + 1], restBounds[2 * axis + 1] - 1e-6,
+                "displacement field ends inside the rest model on axis %d" % axis)
+
+        logic.stopSimulation()
+        self.delayDisplay("Transform-reproduces-deformation test passed")
 
     def test_displacementGridDimensionsMatchParameters(self):
         """Displacement grid dimensions are the parameter dimensions reversed.
