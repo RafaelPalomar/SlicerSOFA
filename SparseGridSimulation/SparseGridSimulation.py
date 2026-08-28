@@ -118,6 +118,30 @@ class SparseGridSimulation(ScriptedLoadableModule):
 # CreateScene Function
 #
 
+# Run the solver single-threaded so a scene is reproducible.
+#
+# SOFA's parallel components sum forces across threads, and floating-point
+# addition is not associative, so the reduction order decides the last bits of
+# every force.  That is normally harmless.  Here it is not: the gravity-loaded
+# liver is an under-damped transient sampled at a fixed time (it rings with a
+# ~20 s period and never settles), so a perturbation in the last bits shifts the
+# phase, and the sampled displacement swings with it.
+#
+# Measured on one patient, four runs, byte-identical inputs:
+#
+#   parallel                0.89 / 0.95 / 6.48 / 10.84 mm   -- 11x spread
+#   serial ODE + FEM        2.78 / 3.22 / 3.24 mm
+#   fully serial            3.2252 / 3.2279 / 3.2424 mm     -- 0.5% spread
+#
+# An 11x spread makes calibration meaningless (it measures one draw of a random
+# variable) and the output non-reproducible.  On this problem the parallelism
+# buys nothing anyway -- the sparse grid is ~700 hexahedra and serialising costs
+# about 2% of wall time (14.5 s against 14.1 s).  Set this to False for a mesh
+# large enough for the threading to pay, accepting that runs stop being
+# reproducible.
+DETERMINISTIC_SOLVER = True
+
+
 def CreateScene(parameterNode) -> Sofa.Core.Node:
     """
     Creates the main SOFA scene with required components for simulation.
@@ -167,11 +191,14 @@ def CreateScene(parameterNode) -> Sofa.Core.Node:
     # Set gravity vector for the simulation (no gravity in this case)
     rootNode.gravity = [0, 0, 0]
 
-    rootNode.addObject('DefaultAnimationLoop', parallelODESolving=True)
+    rootNode.addObject('DefaultAnimationLoop',
+                       parallelODESolving=not DETERMINISTIC_SOLVER)
     rootNode.addObject('CollisionPipeline', depth=6, verbose=0, draw=0)
-    rootNode.addObject('ParallelBruteForceBroadPhase')
+    rootNode.addObject('BruteForceBroadPhase' if DETERMINISTIC_SOLVER
+                       else 'ParallelBruteForceBroadPhase')
     rootNode.addObject('BVHNarrowPhase')
-    rootNode.addObject('ParallelBVHNarrowPhase')
+    if not DETERMINISTIC_SOLVER:
+        rootNode.addObject('ParallelBVHNarrowPhase')
     rootNode.addObject('MinProximityIntersection', name="Proximity", alarmDistance=0.005, contactDistance=0.003)
     rootNode.addObject('CollisionResponse', name="Response", response="PenalityContactForceField")
 
@@ -185,7 +212,9 @@ def CreateScene(parameterNode) -> Sofa.Core.Node:
     fem.addObject('CGLinearSolver', iterations=100, tolerance=1e-5, threshold=1e-5)
     fem.addObject('MechanicalObject', name='MO')
     fem.addObject('UniformMass', totalMass=0.5)
-    fem.addObject('ParallelHexahedronFEMForceField', name="FEMForce", youngModulus=5, poissonRatio=0.40, method="large")
+    fem.addObject('HexahedronFEMForceField' if DETERMINISTIC_SOLVER
+                  else 'ParallelHexahedronFEMForceField',
+                  name="FEMForce", youngModulus=5, poissonRatio=0.40, method="large")
 
     surf = fem.addChild('Surf')
     surf.addObject('MeshTopology', position="@../../InputSurfaceNode/Container.position")
