@@ -290,7 +290,11 @@ class SlicerSofaLogic(ScriptedLoadableModuleLogic):
 
     def setRecordSequenceFlag(self, fieldName: str, flagFunction: Callable):
         """
-        Set a flag function for determining if a field should be recorded as a sequence.
+        Register a parameter-node field for sequence recording.
+
+        The field is recorded only when flagFunction() is truthy at
+        startSimulation() time.  Fields never passed to this method are never
+        recorded -- registration is the opt-in, the flag is the switch.
         """
         self.recordSequenceFlags[fieldName] = flagFunction
 
@@ -407,15 +411,23 @@ class SlicerSofaLogic(ScriptedLoadableModuleLogic):
 
         self.__updateSofa__()
 
+        stepped = False
         if self._parameterNode.currentStep < self._parameterNode.totalSteps or self._parameterNode.totalSteps < 0:
             Sofa.Simulation.animate(self._rootNode, self._parameterNode.dt)
             self._parameterNode.currentStep += 1
             self.updateSimulationProgress()
+            stepped = True
         else:
             self._parameterNode.isSimulationRunning = False
             self.onSimulationStopped()
 
         self.__updateMRML__()
+
+        # One recorded frame per executed step: deterministic frame count,
+        # and the final recorded frame equals the final state, so stopping
+        # cannot rewind the proxies to anything but where they already are.
+        if stepped and getattr(self, '_sequenceBrowserNode', None) is not None:
+            self._sequenceBrowserNode.SaveProxyNodesState()
 
     def resetRunOnceFlags(self):
         """
@@ -472,28 +484,43 @@ class SlicerSofaLogic(ScriptedLoadableModuleLogic):
 
     def setupSequenceRecording(self):
         """
-        Sets up sequence recording for any nodes specified with recordSequence=True.
+        Sets up sequence recording for the fields registered with
+        setRecordSequenceFlag whose flag evaluates truthy.
+
+        Recording is driven explicitly, one frame per executed simulation step
+        (see simulationStep), NOT by the browser's own recording mode.  The
+        browser's clock-based recording samples whenever a proxy is modified,
+        throttled by wall time: a 200-step run recorded 26 frames on one
+        machine, and SamplingAll over-recorded (601 frames for 200 steps,
+        because the update pipeline modifies proxies several times per step).
+        Either way the frame count depended on machine timing, which also made
+        stopping hazardous: the browser snaps proxies back to the last recorded
+        frame, so any read after stopSimulation() returned a state 0-14 steps
+        stale.  With step-aligned capture the last recorded frame IS the final
+        state, so that snap is the identity.
         """
         parameterNode = self.getParameterNode()
         if not parameterNode:
             raise ValueError("Parameter node is not initialized")
 
-        # List to keep track of nodes that require recording
+        # Only fields explicitly registered for recording, and only when their
+        # flag says so.  Previously every mapped field was recorded
+        # unconditionally and the registered flags were never read, so every
+        # simulation paid the recording cost even with recordSequence off.
         recordableNodes = []
-
-        # Check if any MRML-to-SOFA mappings have recordSequence=True
-        for fieldName, _, _, _ in self.sofaMappings + self.mrmlMappings:
-            if getattr(parameterNode, fieldName, None) and fieldName not in recordableNodes:
+        for fieldName, flagFunction in self.recordSequenceFlags.items():
+            try:
+                enabled = bool(flagFunction())
+            except Exception:  # noqa: BLE001 -- a broken flag must not kill the sim
+                enabled = False
+            if enabled and getattr(parameterNode, fieldName, None) is not None:
                 recordableNodes.append(fieldName)
 
-        # Create a sequence browser node if there is anything to record
-        if recordableNodes:
-            self._sequenceBrowserNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLSequenceBrowserNode', "SOFA Simulation Browser")
-        else:
+        if not recordableNodes:
             self._sequenceBrowserNode = None
             return  # No nodes to record
 
-        # Set up recording for each node
+        self._sequenceBrowserNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLSequenceBrowserNode', "SOFA Simulation Browser")
         for fieldName in recordableNodes:
             mrmlNode = getattr(parameterNode, fieldName, None)
             if isinstance(mrmlNode, vtkMRMLNode):
@@ -503,13 +530,19 @@ class SlicerSofaLogic(ScriptedLoadableModuleLogic):
                 self._sequenceBrowserNode.AddProxyNode(mrmlNode, sequenceNode, False)
                 self._sequenceBrowserNode.SetRecording(sequenceNode, True)
 
-        # Activate sequence recording
-        if self._sequenceBrowserNode:
-            self._sequenceBrowserNode.SetRecordingActive(True)
+        # Capture is driven from simulationStep; the browser's own clock-based
+        # recording stays off.
+        self._sequenceBrowserNode.SetRecordingActive(False)
 
     def stopSequenceRecording(self):
         """
-        Stops any active sequence recording if a sequence browser node exists.
+        Stops sequence recording if a sequence browser node exists.
+
+        With step-aligned capture the last recorded frame is the final
+        simulation state, so the browser's snap-to-selected-item on stop is
+        the identity -- reading a recorded proxy after stopSimulation() is
+        safe.  (Under the previous clock-throttled recording it was not: the
+        snap rewound proxies 0-14 steps depending on machine timing.)
         """
         if hasattr(self, '_sequenceBrowserNode') and self._sequenceBrowserNode is not None:
             self._sequenceBrowserNode.SetRecordingActive(False)

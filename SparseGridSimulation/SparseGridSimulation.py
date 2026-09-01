@@ -532,6 +532,13 @@ class SparseGridSimulationLogic(SlicerSofaLogic):
             self.setRecordSequenceFlag('sparseGridModelNode', lambda: parameterNode.recordSequence)
             self.setRecordSequenceFlag('boundaryROI', lambda: parameterNode.recordSequence)
             self.setRecordSequenceFlag('gravityVector', lambda: parameterNode.recordSequence)
+            # The grid transform is what everything downstream consumes
+            # (hardening a volume, resampling a segmentation), and at ~33 KB
+            # per frame it is by far the cheapest node to record -- yet it was
+            # the one node that could NOT be recorded, because it is written
+            # directly by _updateProbingImage and never appeared in the
+            # mapping-derived recordable set.
+            self.setRecordSequenceFlag('gridTransformNode', lambda: parameterNode.recordSequence)
             self.setRecordSequenceFlag('gridTransformNode', lambda: parameterNode.recordSequence)
 
     def mrmlMarkupsLineToSofaGravityVector(self, gravityVectorNode, sofaRootNode):
@@ -710,6 +717,10 @@ class SparseGridSimulationTest(ScriptedLoadableModuleTest):
         self.test_displacementGridDimensionsMatchParameters()
         self.setUp()
         self.test_transformReproducesTheMeshDeformation()
+        self.setUp()
+        self.test_sequenceRecordingIsOffByDefault()
+        self.setUp()
+        self.test_sequenceRecordingIsStepAlignedAndSafeToStop()
 
     @staticmethod
     def _createInputSurfaceModel(radius=10.0, name="Test Surface"):
@@ -888,6 +899,83 @@ class SparseGridSimulationTest(ScriptedLoadableModuleTest):
 
         logic.stopSimulation()
         self.delayDisplay("Transform-reproduces-deformation test passed")
+
+    def test_sequenceRecordingIsOffByDefault(self):
+        """With recordSequence at its False default, nothing is recorded.
+
+        Regression guard: setupSequenceRecording used to record every mapped
+        node unconditionally -- the flag functions registered through
+        setRecordSequenceFlag were stored and never read -- so every simulation
+        paid the recording cost, and stopping rewound the proxies to a
+        wall-clock-dependent frame (see the step-aligned test below).
+        """
+        self.delayDisplay("Starting recording-off test")
+        logic = self._buildLogic()
+        self.assertFalse(logic.getParameterNode().recordSequence)
+        logic.startSimulation()
+        for _ in range(5):
+            logic.simulationStep()
+            slicer.app.processEvents()
+        logic.stopSimulation()
+        self.assertEqual(len(slicer.util.getNodesByClass('vtkMRMLSequenceBrowserNode')), 0,
+                         "recordSequence=False must create no sequence browser")
+        self.assertEqual(len(slicer.util.getNodesByClass('vtkMRMLSequenceNode')), 0,
+                         "recordSequence=False must record no sequences")
+        self.delayDisplay("Recording-off test passed")
+
+    def test_sequenceRecordingIsStepAlignedAndSafeToStop(self):
+        """With recordSequence on: one frame per step, grid transform included,
+        and stopping does not corrupt the proxies.
+
+        Three regression guards in one simulation:
+
+        - Frame count equals step count.  The browser's own clock-based
+          recording made the count depend on machine timing (26 frames for a
+          200-step run throttled; 601 with SamplingAll, since the update
+          pipeline modifies proxies several times per step).
+        - The grid transform records too.  It is the node everything
+          downstream consumes and the cheapest to store, but it never entered
+          the mapping-derived recordable set.
+        - Reading a recorded proxy after stopSimulation() returns the FINAL
+          state.  Under clock-throttled recording the browser's snap on stop
+          rewound proxies 0-14 steps depending on wall time -- measured as a
+          quantized, wall-clock-random error that masqueraded as solver
+          non-determinism.
+        """
+        self.delayDisplay("Starting step-aligned recording test")
+        import numpy as np
+        nSteps = 25
+        logic = self._buildLogic()
+        parameterNode = logic.getParameterNode()
+        parameterNode.recordSequence = True
+        logic.startSimulation()
+        for _ in range(nSteps):
+            logic.simulationStep()
+            slicer.app.processEvents()
+
+        sequences = slicer.util.getNodesByClass('vtkMRMLSequenceNode')
+        self.assertGreater(len(sequences), 0, "recordSequence=True recorded nothing")
+        for sequenceNode in sequences:
+            self.assertEqual(
+                sequenceNode.GetNumberOfDataNodes(), nSteps,
+                "%s recorded %d frames for %d steps -- capture is not step-aligned"
+                % (sequenceNode.GetName(), sequenceNode.GetNumberOfDataNodes(), nSteps))
+        names = {sequenceNode.GetName() for sequenceNode in sequences}
+        self.assertIn("Grid Transform_Sequence", names,
+                      "the grid transform -- the node downstream consumers actually "
+                      "use -- was not recorded (got: %s)" % sorted(names))
+
+        beforeStop = slicer.util.arrayFromModelPointData(
+            parameterNode.sparseGridModelNode, "Displacement").copy()
+        logic.stopSimulation()
+        afterStop = slicer.util.arrayFromModelPointData(
+            parameterNode.sparseGridModelNode, "Displacement")
+        self.assertTrue(
+            np.array_equal(beforeStop, afterStop),
+            "stopSimulation() changed the recorded proxy: max delta %.6f mm -- "
+            "the browser rewound it to a stale recorded frame"
+            % float(np.abs(beforeStop - afterStop).max()))
+        self.delayDisplay("Step-aligned recording test passed")
 
     def test_displacementGridDimensionsMatchParameters(self):
         """Displacement grid dimensions are the parameter dimensions reversed.
