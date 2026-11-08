@@ -24,7 +24,7 @@ if platform.system() == "Windows":
         sys.path = [this_script_dir + '/../../../../../Sofa-build/lib/python3/site-packages'] + sys.path
 # MacOS
 elif platform.system() == "Darwin":
-    if os.path.isdir(this_script_dir + '/../../'): #Install-tree
+    if os.path.isdir(this_script_dir + '/../../python3/site-packages'): #Install-tree
         os.environ['SOFA_ROOT'] = this_script_dir + '/../../'
         sys.path = [this_script_dir + '/../../python3/site-packages'] + sys.path
     else:                                         #Build-tree
